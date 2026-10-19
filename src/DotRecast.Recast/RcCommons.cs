@@ -38,9 +38,14 @@ namespace DotRecast.Recast
         /// @param[in]		neighborIndex	The index of the neighbor span.
         public static void SetCon(RcCompactSpanBuilder span, int direction, int neighborIndex)
         {
+            span.con = SetCon(span.con, direction, neighborIndex);
+        }
+
+        /// Returns the packed connection data with one direction replaced (same bit layout as above).
+        public static int SetCon(int con, int direction, int neighborIndex)
+        {
             int shift = direction * 6;
-            int con = span.con;
-            span.con = (con & ~(0x3f << shift)) | ((neighborIndex & 0x3f) << shift);
+            return (con & ~(0x3f << shift)) | ((neighborIndex & 0x3f) << shift);
         }
 
         /// Gets neighbor connection data for the specified direction.

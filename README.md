@@ -1,3 +1,32 @@
+<!-- ffxiv-tc-port 繁體中文說明開始 -->
+# DotRecast(台服 fork)
+
+Recast & Detour 導航網格工具組的 C# 移植。本 repo fork 自 vnavmesh 作者 xanunderscore 維護的分支
+（再往上是 ikpil/DotRecast），供 `vnavmesh` 建立導航網格與尋路。
+
+## 台服 fork 的目的
+
+降低建網格與尋路時的記憶體配置，並清掉會干擾 log 的輸出；網格與尋路結果不變。
+
+## 與上游的差異
+
+- **建網格重用暫存**：高度場與各建置步驟重用暫存陣列，大地圖建網格時的記憶體配置大幅減少
+  （建出的網格不變）。
+- **尋路內圈不再組除錯字串**：原本每次都無條件組出沒人看的字串。
+- **不再往 stderr 印「Dangling!」**。
+- 另外吃進上游在基底之後的兩個輪廓邊修正（Y 軸誤差容許）。
+
+## 誰在用它
+
+目前只有 **`vnavmesh`** 一個插件 repo 以子模組使用；其他插件的自動移動多半經由 vnavmesh 的 IPC
+間接用到它。
+
+---
+
+以下為上游原始 README，內容未經修改：
+
+<!-- ffxiv-tc-port 繁體中文說明結束 -->
+
 <h1 align="center">DotRecast</h1>
 <p align="center">
 <i>DotRecast is C# Recast & Detour, a port of <a href="https://github.com/recastnavigation/recastnavigation">recastnavigation</a> and <a href="https://github.com/ppiastucki/recast4j">recast4j</a> to the C# language.</i>

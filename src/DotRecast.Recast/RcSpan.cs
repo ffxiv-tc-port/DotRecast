@@ -19,6 +19,7 @@ freely, subject to the following restrictions:
 */
 
 using System;
+using System.Collections.Concurrent;
 
 namespace DotRecast.Recast
 {
@@ -39,48 +40,98 @@ namespace DotRecast.Recast
     }
 
     /** A pool of spans. Index 0 is reserved to mean 'null'. */
+    // Storage is split into fixed-size pages: growing adds a page (nothing is copied, indices never move).
     public class RcSpanPool
     {
-        private RcSpan[] storage = new RcSpan[64 * 1024];
+        public const int PAGE_SHIFT = 16;
+        public const int PAGE_SIZE = 1 << PAGE_SHIFT;
+        private const uint PAGE_MASK = PAGE_SIZE - 1;
+
+        private readonly RcSpanPageSource pageSource; // null: pages are just allocated and dropped with the pool
+        private RcSpan[][] pages = new RcSpan[16][];
+        private int pageCount;
         private uint firstUnalloc = 1; // storage element with index >= this is not initialized
 
-        public RcSpanPool()
+        public RcSpanPool() : this(null)
         {
-            storage[0].next = firstUnalloc;
         }
 
-        public ref RcSpan Span(uint index) => ref storage[index];
+        public RcSpanPool(RcSpanPageSource pageSource)
+        {
+            this.pageSource = pageSource;
+            AddPage();
+            pages[0][0].next = firstUnalloc;
+        }
+
+        public ref RcSpan Span(uint index) => ref pages[index >> PAGE_SHIFT][index & PAGE_MASK];
 
         public uint Alloc()
         {
-            var index = storage[0].next;
+            ref RcSpan head = ref pages[0][0];
+            var index = head.next;
             if (index < firstUnalloc)
             {
                 // get span from the free list
-                storage[0].next = storage[index].next;
-                storage[index].next = 0;
+                ref RcSpan span = ref Span(index);
+                head.next = span.next;
+                span.next = 0;
                 return index;
             }
 
-            // free list is empty
-            if (storage.Length == firstUnalloc)
-            {
-                // and storage is full => grow
-                var oldStorage = storage;
-                storage = new RcSpan[oldStorage.Length * 2];
-                Array.Copy(oldStorage, storage, oldStorage.Length);
-            }
+            // free list is empty; if storage is full, add a page (page 0 stays where it is, so `head` stays valid)
+            if (index == (uint)pageCount << PAGE_SHIFT)
+                AddPage();
 
             // index == firstUnalloc => storage[index] == 0 (never initialized)
-            storage[0].next = ++firstUnalloc;
+            head.next = ++firstUnalloc;
             return index;
         }
 
         public void Free(uint index)
         {
             // push span to the head of the free list
-            storage[index].next = storage[0].next;
-            storage[0].next = index;
+            ref RcSpan head = ref pages[0][0];
+            Span(index).next = head.next;
+            head.next = index;
+        }
+
+        // Zeroes the used part and gives the pages back to the page source; this pool must not be used afterwards.
+        public void ReleasePages()
+        {
+            for (int i = 0; i < pageCount; ++i)
+            {
+                long used = Math.Min((long)firstUnalloc - ((long)i << PAGE_SHIFT), PAGE_SIZE);
+                if (used > 0)
+                    Array.Clear(pages[i], 0, (int)used);
+                pageSource?.Return(pages[i]);
+                pages[i] = null;
+            }
+
+            pageCount = 0;
+        }
+
+        private void AddPage()
+        {
+            if (pageCount == pages.Length)
+                Array.Resize(ref pages, pages.Length * 2);
+            pages[pageCount++] = pageSource != null ? pageSource.Take() : new RcSpan[PAGE_SIZE];
+        }
+    }
+
+    // Thread-safe stock of zeroed span pages shared by heightfields that are built one after another or concurrently.
+    public sealed class RcSpanPageSource
+    {
+        private readonly ConcurrentBag<RcSpan[]> pages = new ConcurrentBag<RcSpan[]>();
+
+        internal RcSpan[] Take() => pages.TryTake(out var page) ? page : new RcSpan[RcSpanPool.PAGE_SIZE];
+
+        internal void Return(RcSpan[] page) => pages.Add(page);
+
+        public void Clear()
+        {
+            while (pages.TryTake(out _))
+            {
+            }
         }
     }
 }

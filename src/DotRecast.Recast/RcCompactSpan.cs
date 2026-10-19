@@ -42,5 +42,13 @@ namespace DotRecast.Recast
             con = span.con;
             h = span.h;
         }
+
+        public RcCompactSpan(int y, int reg, int con, int h)
+        {
+            this.y = y;
+            this.reg = reg;
+            this.con = con;
+            this.h = h;
+        }
     }
 }

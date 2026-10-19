@@ -156,7 +156,7 @@ namespace DotRecast.Recast
         }
 
 
-        private static bool CircumCircle(float[] verts, int p1, int p2, int p3, ref RcVec3f c, RcAtomicFloat r)
+        private static bool CircumCircle(float[] verts, int p1, int p2, int p3, ref RcVec3f c, ref float r)
         {
             const float EPS = 1e-6f;
             // Calculate the circle relative to p1, to avoid some precision issues.
@@ -173,13 +173,13 @@ namespace DotRecast.Recast
                 c.X = (v1Sq * (v2.Z - v3.Z) + v2Sq * (v3.Z - v1.Z) + v3Sq * (v1.Z - v2.Z)) / (2 * cp);
                 c.Y = 0;
                 c.Z = (v1Sq * (v3.X - v2.X) + v2Sq * (v1.X - v3.X) + v3Sq * (v2.X - v1.X)) / (2 * cp);
-                r.Exchange(Vdist2(c, v1));
+                r = Vdist2(c, v1);
                 c = RcVecUtils.Add(c, verts, p1);
                 return true;
             }
 
             c = RcVecUtils.Create(verts, p1);
-            r.Exchange(0f);
+            r = 0f;
             return false;
         }
 
@@ -534,7 +534,7 @@ namespace DotRecast.Recast
             // Find best point on left of edge.
             int pt = npts;
             RcVec3f c = new RcVec3f();
-            RcAtomicFloat r = new RcAtomicFloat(-1f);
+            float r = -1f;
             for (int u = 0; u < npts; ++u)
             {
                 if (u == s || u == t)
@@ -544,26 +544,26 @@ namespace DotRecast.Recast
 
                 if (Vcross2(pts, s * 3, t * 3, u * 3) > EPS)
                 {
-                    if (r.Get() < 0)
+                    if (r < 0)
                     {
                         // The circle is not updated yet, do it now.
                         pt = u;
-                        CircumCircle(pts, s * 3, t * 3, u * 3, ref c, r);
+                        CircumCircle(pts, s * 3, t * 3, u * 3, ref c, ref r);
                         continue;
                     }
 
                     float d = Vdist2(c, pts, u * 3);
                     float tol = 0.001f;
-                    if (d > r.Get() * (1 + tol))
+                    if (d > r * (1 + tol))
                     {
                         // Outside current circumcircle, skip.
                         continue;
                     }
-                    else if (d < r.Get() * (1 - tol))
+                    else if (d < r * (1 - tol))
                     {
                         // Inside safe circumcircle, update circle.
                         pt = u;
-                        CircumCircle(pts, s * 3, t * 3, u * 3, ref c, r);
+                        CircumCircle(pts, s * 3, t * 3, u * 3, ref c, ref r);
                     }
                     else
                     {
@@ -581,7 +581,7 @@ namespace DotRecast.Recast
 
                         // Edge is valid.
                         pt = u;
-                        CircumCircle(pts, s * 3, t * 3, u * 3, ref c, r);
+                        CircumCircle(pts, s * 3, t * 3, u * 3, ref c, ref r);
                     }
                 }
             }
@@ -624,11 +624,11 @@ namespace DotRecast.Recast
             return nfaces;
         }
 
-        private static void DelaunayHull(RcContext ctx, int npts, float[] pts, int nhull, int[] hull, List<int> tris)
+        private static void DelaunayHull(RcContext ctx, int npts, float[] pts, int nhull, int[] hull, List<int> tris, List<int> edges)
         {
             int nfaces = 0;
             int maxEdges = npts * 10;
-            List<int> edges = new List<int>(64);
+            edges.Clear();
             for (int i = 0, j = nhull - 1; i < nhull; j = i++)
             {
                 AddEdge(ctx, edges, maxEdges, hull[j], hull[i], EV_HULL, EV_UNDEF);
@@ -704,7 +704,6 @@ namespace DotRecast.Recast
                 int t = i * 4;
                 if (tris[t + 0] == -1 || tris[t + 1] == -1 || tris[t + 2] == -1)
                 {
-                    Console.Error.WriteLine("Dangling! " + tris[t] + " " + tris[t + 1] + "  " + tris[t + 2]);
                     // ctx.Log(RC_LOG_WARNING, "delaunayHull: Removing dangling face %d [%d,%d,%d].", i, t.x,t.y,t.z);
                     tris[t + 0] = tris[tris.Count - 4];
                     tris[t + 1] = tris[tris.Count - 3];
@@ -828,14 +827,26 @@ namespace DotRecast.Recast
             return (((i * 0xd8163841) & 0xffff) / 65535.0f * 2.0f) - 1.0f;
         }
 
-        static int BuildPolyDetail(RcContext ctx, float[] @in, int nin, float sampleDist, float sampleMaxError,
-            int heightSearchRadius, RcCompactHeightfield chf, RcHeightPatch hp, float[] verts, List<int> tris)
+        // Buffers shared by all polygons of one BuildPolyMeshDetail call; each helper only reads what it wrote for the current polygon.
+        private sealed class DetailScratch
         {
-            List<int> samples = new List<int>(512);
+            public readonly List<int> samples = new List<int>(512);
+            public readonly float[] edge = new float[(MAX_VERTS_PER_EDGE + 1) * 3];
+            public readonly int[] hull = new int[MAX_VERTS];
+            public readonly int[] idx = new int[MAX_VERTS_PER_EDGE];
+            public readonly List<int> edges = new List<int>(64);
+            public readonly List<int> queue = new List<int>(512);
+        }
+
+        static int BuildPolyDetail(RcContext ctx, float[] @in, int nin, float sampleDist, float sampleMaxError,
+            int heightSearchRadius, RcCompactHeightfield chf, RcHeightPatch hp, float[] verts, List<int> tris, DetailScratch scratch)
+        {
+            List<int> samples = scratch.samples;
+            samples.Clear();
 
             int nverts = 0;
-            float[] edge = new float[(MAX_VERTS_PER_EDGE + 1) * 3];
-            int[] hull = new int[MAX_VERTS];
+            float[] edge = scratch.edge;
+            int[] hull = scratch.hull;
             int nhull = 0;
 
             nverts = nin;
@@ -910,7 +921,7 @@ namespace DotRecast.Recast
                     }
 
                     // Simplify samples.
-                    int[] idx = new int[MAX_VERTS_PER_EDGE];
+                    int[] idx = scratch.idx;
                     idx[0] = 0;
                     idx[1] = nn;
                     int nidx = 2;
@@ -1088,7 +1099,7 @@ namespace DotRecast.Recast
 
                     // Create new triangulation.
                     // TODO: Incremental add instead of full rebuild.
-                    DelaunayHull(ctx, nverts, verts, nhull, hull, tris);
+                    DelaunayHull(ctx, nverts, verts, nhull, hull, tris, scratch.edges);
                 }
             }
 
@@ -1299,12 +1310,12 @@ namespace DotRecast.Recast
         }
 
         static void GetHeightData(RcContext ctx, RcCompactHeightfield chf, int[] meshpolys, int poly, int npoly, int[] verts,
-            int bs, RcHeightPatch hp, int region)
+            int bs, RcHeightPatch hp, int region, List<int> queue)
         {
             // Note: Reads to the compact heightfield are offset by border size (bs)
             // since border size offset is already removed from the polymesh vertices.
 
-            List<int> queue = new List<int>(512);
+            queue.Clear();
             Array.Fill(hp.data, RC_UNSET_HEIGHT, 0, (hp.width * hp.height) - (0));
 
             bool empty = true;
@@ -1384,7 +1395,7 @@ namespace DotRecast.Recast
                 if (head >= RETRACT_SIZE)
                 {
                     head = 0;
-                    queue = queue.GetRange(RETRACT_SIZE * 3, queue.Count - (RETRACT_SIZE * 3));
+                    queue.RemoveRange(0, RETRACT_SIZE * 3);
                 }
 
                 ref RcCompactSpan cs = ref chf.spans[ci];
@@ -1444,6 +1455,7 @@ namespace DotRecast.Recast
             List<int> tris = new List<int>(512);
             float[] verts = new float[256 * 3];
             RcHeightPatch hp = new RcHeightPatch();
+            DetailScratch scratch = new DetailScratch();
             int nPolyVerts = 0;
             int maxhw = 0, maxhh = 0;
 
@@ -1526,11 +1538,11 @@ namespace DotRecast.Recast
                 hp.ymin = bounds[i * 4 + 2];
                 hp.width = bounds[i * 4 + 1] - bounds[i * 4 + 0];
                 hp.height = bounds[i * 4 + 3] - bounds[i * 4 + 2];
-                GetHeightData(ctx, chf, mesh.polys, p, npoly, mesh.verts, borderSize, hp, mesh.regs[i]);
+                GetHeightData(ctx, chf, mesh.polys, p, npoly, mesh.verts, borderSize, hp, mesh.regs[i], scratch.queue);
 
                 // Build detail mesh.
                 int nverts = BuildPolyDetail(ctx, poly, npoly, sampleDist, sampleMaxError, heightSearchRadius, chf, hp,
-                    verts, tris);
+                    verts, tris, scratch);
 
                 // Move detail verts to world space.
                 for (int j = 0; j < nverts; ++j)

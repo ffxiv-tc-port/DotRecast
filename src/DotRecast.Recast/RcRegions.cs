@@ -213,11 +213,10 @@ namespace DotRecast.Recast
             return maxDist;
         }
 
-        private static int[] BoxBlur(RcCompactHeightfield chf, int thr, int[] src)
+        private static int[] BoxBlur(RcCompactHeightfield chf, int thr, int[] src, int[] dst)
         {
             int w = chf.width;
             int h = chf.height;
-            int[] dst = new int[chf.spanCount];
 
             thr *= 2;
 
@@ -388,11 +387,13 @@ namespace DotRecast.Recast
             return count > 0;
         }
 
+        // dirtyEntries is scratch only (cleared on every pass); the caller passes one list for all calls.
         private static void ExpandRegions(int maxIter, int level,
             RcCompactHeightfield chf,
             int[] srcReg, int[] srcDist,
             List<RcLevelStackEntry> stack,
-            bool fillStack)
+            bool fillStack,
+            List<RcDirtyEntry> dirtyEntries)
         {
             int w = chf.width;
             int h = chf.height;
@@ -429,7 +430,6 @@ namespace DotRecast.Recast
                 }
             }
 
-            List<RcDirtyEntry> dirtyEntries = new List<RcDirtyEntry>();
             int iter = 0;
             while (stack.Count > 0)
             {
@@ -1415,7 +1415,7 @@ namespace DotRecast.Recast
         {
             using var timer = ctx.ScopedTimer(RcTimerLabel.RC_TIMER_BUILD_DISTANCEFIELD);
 
-            int[] src = new int[chf.spanCount];
+            int[] src = chf.scratch != null ? chf.scratch.Ints(RcBuildScratch.DIST_TEMP, chf.spanCount) : new int[chf.spanCount];
 
             ctx.StartTimer(RcTimerLabel.RC_TIMER_BUILD_DISTANCEFIELD_DIST);
             int maxDist = CalculateDistanceField(chf, src);
@@ -1425,7 +1425,7 @@ namespace DotRecast.Recast
             ctx.StartTimer(RcTimerLabel.RC_TIMER_BUILD_DISTANCEFIELD_BLUR);
 
             // Blur
-            src = BoxBlur(chf, 1, src);
+            src = BoxBlur(chf, 1, src, chf.scratch != null ? chf.scratch.Ints(RcBuildScratch.DIST, chf.spanCount) : new int[chf.spanCount]);
 
             // Store distance.
             chf.dist = src;
@@ -1628,10 +1628,8 @@ namespace DotRecast.Recast
             // Store the result out.
             for (int i = 0; i < chf.spanCount; ++i)
             {
-                chf.spans[i] = RcCompactSpanBuilder
-                    .NewBuilder(ref chf.spans[i])
-                    .WithReg(srcReg[i])
-                    .Build();
+                RcCompactSpan s = chf.spans[i];
+                chf.spans[i] = new RcCompactSpan(s.y, srcReg[i], s.con, s.h);
             }
         }
 
@@ -1667,16 +1665,32 @@ namespace DotRecast.Recast
 
             int LOG_NB_STACKS = 3;
             int NB_STACKS = 1 << LOG_NB_STACKS;
-            List<List<RcLevelStackEntry>> lvlStacks = new List<List<RcLevelStackEntry>>();
-            for (int i = 0; i < NB_STACKS; ++i)
+            List<List<RcLevelStackEntry>> lvlStacks;
+            List<RcLevelStackEntry> stack;
+            List<RcDirtyEntry> dirtyEntries;
+            int[] srcReg;
+            int[] srcDist;
+            if (chf.scratch != null)
             {
-                lvlStacks.Add(new List<RcLevelStackEntry>(256));
+                lvlStacks = chf.scratch.LevelStacks(NB_STACKS);
+                stack = chf.scratch.Stack();
+                dirtyEntries = chf.scratch.DirtyEntries();
+                srcReg = chf.scratch.Ints(RcBuildScratch.REGION_REG, chf.spanCount);
+                srcDist = chf.scratch.Ints(RcBuildScratch.REGION_DIST, chf.spanCount);
             }
+            else
+            {
+                lvlStacks = new List<List<RcLevelStackEntry>>();
+                for (int i = 0; i < NB_STACKS; ++i)
+                {
+                    lvlStacks.Add(new List<RcLevelStackEntry>(256));
+                }
 
-            List<RcLevelStackEntry> stack = new List<RcLevelStackEntry>(256);
-
-            int[] srcReg = new int[chf.spanCount];
-            int[] srcDist = new int[chf.spanCount];
+                stack = new List<RcLevelStackEntry>(256);
+                dirtyEntries = new List<RcDirtyEntry>();
+                srcReg = new int[chf.spanCount];
+                srcDist = new int[chf.spanCount];
+            }
 
             int regionId = 1;
             int level = (chf.maxDistance + 1) & ~1;
@@ -1727,7 +1741,7 @@ namespace DotRecast.Recast
                 ctx.StartTimer(RcTimerLabel.RC_TIMER_BUILD_REGIONS_EXPAND);
 
                 // Expand current regions until no empty connected cells found.
-                ExpandRegions(expandIters, level, chf, srcReg, srcDist, lvlStacks[sId], false);
+                ExpandRegions(expandIters, level, chf, srcReg, srcDist, lvlStacks[sId], false, dirtyEntries);
 
                 ctx.StopTimer(RcTimerLabel.RC_TIMER_BUILD_REGIONS_EXPAND);
 
@@ -1753,7 +1767,7 @@ namespace DotRecast.Recast
             }
 
             // Expand current regions until no empty connected cells found.
-            ExpandRegions(expandIters * 8, 0, chf, srcReg, srcDist, stack, true);
+            ExpandRegions(expandIters * 8, 0, chf, srcReg, srcDist, stack, true, dirtyEntries);
 
             ctx.StopTimer(RcTimerLabel.RC_TIMER_BUILD_REGIONS_WATERSHED);
 
@@ -1774,10 +1788,8 @@ namespace DotRecast.Recast
             // Write the result out.
             for (int i = 0; i < chf.spanCount; ++i)
             {
-                chf.spans[i] = RcCompactSpanBuilder
-                    .NewBuilder(ref chf.spans[i])
-                    .WithReg(srcReg[i])
-                    .Build();
+                RcCompactSpan s = chf.spans[i];
+                chf.spans[i] = new RcCompactSpan(s.y, srcReg[i], s.con, s.h);
             }
         }
 
@@ -1937,10 +1949,8 @@ namespace DotRecast.Recast
             // Store the result out.
             for (int i = 0; i < chf.spanCount; ++i)
             {
-                chf.spans[i] = RcCompactSpanBuilder
-                    .NewBuilder(ref chf.spans[i])
-                    .WithReg(srcReg[i])
-                    .Build();
+                RcCompactSpan s = chf.spans[i];
+                chf.spans[i] = new RcCompactSpan(s.y, srcReg[i], s.con, s.h);
             }
 
             return true;

@@ -18,6 +18,7 @@ freely, subject to the following restrictions:
 3. This notice may not be removed or altered from any source distribution.
 */
 
+using System;
 using DotRecast.Core.Numerics;
 
 namespace DotRecast.Recast
@@ -53,7 +54,15 @@ namespace DotRecast.Recast
         public readonly int borderSize;
 
         public RcHeightfield(int width, int height, RcVec3f bmin, RcVec3f bmax, float cs, float ch, int borderSize)
+            : this(width, height, bmin, bmax, cs, ch, borderSize, null, null)
         {
+        }
+
+        // recycledSpans must come from ReleaseStorage of a heightfield with the same width * height (all zero).
+        public RcHeightfield(int width, int height, RcVec3f bmin, RcVec3f bmax, float cs, float ch, int borderSize, uint[] recycledSpans, RcSpanPageSource spanPages)
+        {
+            if (recycledSpans != null && recycledSpans.Length != width * height)
+                throw new ArgumentException("recycled span heads have a different size", nameof(recycledSpans));
             this.width = width;
             this.height = height;
             this.bmin = bmin;
@@ -61,10 +70,19 @@ namespace DotRecast.Recast
             this.cs = cs;
             this.ch = ch;
             this.borderSize = borderSize;
-            spans = new uint[width * height];
-            spanPool = new RcSpanPool();
+            spans = recycledSpans ?? new uint[width * height];
+            spanPool = new RcSpanPool(spanPages);
         }
 
         public ref RcSpan Span(uint index) => ref spanPool.Span(index);
+
+        // Zeroes the column heads (returned for the next heightfield) and gives the span pages back to their source;
+        // this heightfield must not be used afterwards.
+        public uint[] ReleaseStorage()
+        {
+            Array.Clear(spans, 0, spans.Length);
+            spanPool.ReleasePages();
+            return spans;
+        }
     }
 }

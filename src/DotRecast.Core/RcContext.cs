@@ -56,7 +56,11 @@ namespace DotRecast.Core
 
         public void StartTimer(RcTimerLabel label)
         {
-            _timerStart.Value[label.Name] = new RcAtomicLong(RcFrequency.Ticks);
+            var starts = _timerStart.Value;
+            if (starts.TryGetValue(label.Name, out var start))
+                start.Exchange(RcFrequency.Ticks);
+            else
+                starts[label.Name] = new RcAtomicLong(RcFrequency.Ticks);
         }
 
 

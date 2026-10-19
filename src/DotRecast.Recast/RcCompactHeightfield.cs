@@ -72,5 +72,8 @@ namespace DotRecast.Recast
 
         /** Array containing area id data. [Size: #spanCount] */
         public int[] areas;
+
+        // Non-null when built with RcBuildScratch: the arrays above may be longer than their [Size] and are borrowed.
+        public RcBuildScratch scratch;
     }
 }

@@ -7,6 +7,12 @@ namespace DotRecast.Detour
     public static class DtUtils
     {
         public static Action<string, Exception> LogHandler = null;
+
+        // Gate for callers that build their message with string interpolation / LINQ.
+        // Without it the message is fully materialised at the call site even when LogHandler is null,
+        // which is unconditional allocation inside FindPath's per-link inner loop.
+        public static bool LogEnabled => LogHandler != null;
+
         public static void Log(string message) => LogHandler?.Invoke(message, null);
         public static void Log(Exception ex, string message) => LogHandler?.Invoke(message, ex);
 
