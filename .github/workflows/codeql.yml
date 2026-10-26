@@ -86,3 +86,4 @@ jobs:
         uses: github/codeql-action/analyze@v2
         with:
           category: "/language:${{matrix.language}}"
+# workflow re-registration trigger 2026-10-26T13:45:38Z

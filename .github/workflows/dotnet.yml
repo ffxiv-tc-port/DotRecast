@@ -49,3 +49,4 @@ jobs:
 
       - name: Test
         run: dotnet test -c Release --no-build --verbosity normal --framework net${{ matrix.dotnet-version }}.0
+# workflow re-registration trigger 2026-10-26T13:45:38Z
